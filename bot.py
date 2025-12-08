@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 # --- 配置区 ---
 LOCAL_API_URL = os.getenv("LOCAL_API_URL", "http://127.0.0.1:8081/bot") 
 LOCAL_FILE_URL = os.getenv("LOCAL_FILE_URL", "http://127.0.0.1:8081/file/bot")
-# PUBLIC_DOWNLOAD_ROOT: 指向 Leaflow 公网域名 + /file
 PUBLIC_DOWNLOAD_ROOT = os.getenv("PUBLIC_DOWNLOAD_ROOT", "http://localhost:8081/file")
 
 # ⚠️ 请确保这里填对您的 ID (数字)
@@ -70,7 +69,7 @@ async def ensure_allowed(update: Update):
         return False
     return True
 
-# --- 自动清理线程 (确保20GB不爆) ---
+# --- 自动清理线程 ---
 CACHE_DIR = "/var/lib/telegram-bot-api"
 def cleanup_loop():
     logger.info("Auto-cleanup thread started.")
@@ -80,22 +79,20 @@ def cleanup_loop():
                 time.sleep(60)
                 continue
 
-            # 检查剩余空间
             try:
                 stat = os.statvfs(CACHE_DIR)
                 free_space = stat.f_bavail * stat.f_frsize
             except:
-                free_space = 99999999999 # 如果路径不对，暂时跳过
+                free_space = 99999999999
 
-            # 如果少于 2GB，开始清理
             if free_space < 2 * 1024 * 1024 * 1024:
-                logger.warning(f"Low disk space ({free_space/1024/1024:.2f} MB). Cleaning up...")
+                logger.warning(f"Low disk space. Cleaning up...")
                 files = []
                 for r, d, f in os.walk(CACHE_DIR):
                     for file in f:
                         fp = os.path.join(r, file)
                         files.append((fp, os.path.getmtime(fp)))
-                files.sort(key=lambda x: x[1]) # 按时间最旧排序
+                files.sort(key=lambda x: x[1])
 
                 deleted_size = 0
                 for fp, mtime in files:
@@ -103,26 +100,20 @@ def cleanup_loop():
                         sz = os.path.getsize(fp)
                         os.remove(fp)
                         deleted_size += sz
-                        logger.info(f"Deleted: {fp}")
-                        if deleted_size > 1 * 1024 * 1024 * 1024: # 每次腾 1GB
+                        if deleted_size > 1 * 1024 * 1024 * 1024:
                             break
                     except: pass
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
-        time.sleep(300) # 5分钟检查一次
+        time.sleep(300)
 
 # --- Bot 逻辑 ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
-    # 使用三引号，避免换行符问题
-    msg = """📸 **Bot Ready (Local API Mode)**
-🔹 /start_album - 开始新图包
-🔹 /nav - 切换分类
-🔹 /end_album - 发布
-🔸 直接发送 图片/视频/文件 即可添加"""
+    # 修复：使用单行字符串拼接，避免 SyntaxError
+    msg = "📸 **Bot Ready (Local API Mode)**\n🔹 /start_album - 开始新图包\n🔹 /nav - 切换分类\n🔹 /end_album - 发布\n🔸 直接发送 图片/视频/文件 即可添加"
     await update.message.reply_text(msg)
-
 
 async def start_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
@@ -135,8 +126,9 @@ async def start_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "zip": None,
         "password": None,
     }
-    await update.message.reply_text(f"🟦 已开始！默认分类：**{default_cat}**
-请发送标题。")
+    # 修复：单行拼接
+    msg = f"🟦 已开始！默认分类：**{default_cat}**\n请发送标题。"
+    await update.message.reply_text(msg)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
@@ -158,8 +150,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     album = current_albums.get(uid)
     if album:
         album["title"] = text
-        await update.message.reply_text(f"✅ 标题：**{text}**
-(/nav 修改分类，或直接发图)")
+        await update.message.reply_text(f"✅ 标题：**{text}**\n(/nav 修改分类，或直接发图)")
 
 async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
@@ -198,12 +189,9 @@ async def delete_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if len(update.message.text.split()) < 2:
             return await update.message.reply_text("用法: /delete a01")
-
         code = update.message.text.split()[1]
-
         if not kv_get(code):
             return await update.message.reply_text("KV中不存在该代码")
-
         pending_deletes[update.effective_user.id] = code
         await update.message.reply_text(f"⚠️ 确认删除 {code}？(回复 yes/no)")
     except Exception as e:
@@ -221,15 +209,7 @@ async def end_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if kv_put(code, json.dumps(album, ensure_ascii=False)):
         del current_albums[uid]
         await update.message.reply_text(
-            f"🎉 **发布成功**
-"
-            f"Code: `{code}`
-"
-            f"Title: {album['title']}
-"
-            f"Cat: {album['category']}
-"
-            f"{WORKER_BASE_URL}/{code}",
+            f"🎉 **发布成功**\nCode: `{code}`\nTitle: {album['title']}\nCat: {album['category']}\n{WORKER_BASE_URL}/{code}",
             parse_mode="Markdown"
         )
     else:
@@ -255,18 +235,17 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = update.message
 
-    # 1. 图片: 存 file_id (Worker 会走代理)
+    # 1. 图片
     if msg.photo:
         album["files"].append(msg.photo[-1].file_id)
         return
 
-    # 2. 视频/文件: 走 Local API 下载
+    # 2. 视频/文件
     if msg.video or msg.document:
         status_msg = await msg.reply_text("⏳ 正在请求 Local API 下载缓存 (大文件请耐心等待)...")
 
         try:
             if msg.video:
-                # get_file() 会触发 Local Server 下载文件到硬盘
                 new_file = await msg.video.get_file() 
                 fname = msg.video.file_name or "video.mp4"
                 mime = msg.video.mime_type
@@ -275,16 +254,13 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 fname = msg.document.file_name or "file"
                 mime = msg.document.mime_type
 
-            # 构造直链
-            # file_path 是相对路径 (如 videos/file_123.mp4)
-            # 我们要拼成 https://leaflow-domain/file/bot<TOKEN>/videos/...
             direct_url = f"{PUBLIC_DOWNLOAD_ROOT}/bot{BOT_TOKEN}/{new_file.file_path}"
 
             info = {
                 "file_id": new_file.file_id, 
                 "file_name": fname, 
                 "mime_type": mime,
-                "direct_url": direct_url # 关键
+                "direct_url": direct_url 
             }
 
             album["attachments"].append(info)
@@ -294,8 +270,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=msg.chat_id,
                 message_id=status_msg.message_id,
-                text=f"✅ 已缓存！
-直链: {direct_url}"
+                text=f"✅ 已缓存！\n直链: {direct_url}"
             )
 
         except Exception as e:
@@ -307,10 +282,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 def main():
-    # 启动清理线程
     threading.Thread(target=cleanup_loop, daemon=True).start()
-
-    # 连接 Local API
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
