@@ -4,7 +4,7 @@
 
 const SITE_TITLE = "MTCweb";
 // 你可以在这里填入你的 LOGO URL，如果留空则显示文字
-const SITE_LOGO = ""; 
+const SITE_LOGO = "https://link.tyrlink.dpdns.org/mtc.png"; 
 const COUNTER_KEY = "__counter";
 const DEFAULT_CATS = "热门 Cosplay,视频专区,软件资源,个人写真";
 const PAGE_SIZE = 20;
