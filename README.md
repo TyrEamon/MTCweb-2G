@@ -27,7 +27,8 @@
 ## 🏗️ 架构概览 (Architecture)
 
 graph LR
-    User[用户] --> CF[Cloudflare Worker <br/> (UI / Cache / Search)]
+    User[用户] --> 
+    CF[Cloudflare Worker <br/> (UI / Cache / Search)
     CF -- Metadata --> KV[Cloudflare KV]
     CF -- Stream/Download --> Leaflow[Leaflow / VPS Container]
     Leaflow -- Local API --> TG[Telegram Server]
