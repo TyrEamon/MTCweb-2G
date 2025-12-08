@@ -319,6 +319,7 @@ function getHeadStyle(title) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>${title}</title>
+<link rel="icon" href="https://link.tyrlink.dpdns.org/mtc.png" type="image/png">
 <style>
 :root { --bg-color: #020617; --header-bg: #0f172a; --card-bg: #1e293b; --text-primary: #f8fafc; --text-secondary: #94a3b8; --accent: #e11d48; --border: #334155; }
 * { box-sizing: border-box; }
@@ -384,6 +385,7 @@ ul { list-style: none; padding: 0; margin: 0; }
 <body>
 `;
 }
+
 
 function getDrawer(categories) {
   const navItemsHtml = categories.map(item => 
