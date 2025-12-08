@@ -12,7 +12,7 @@ FROM python:3.10-slim
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 # 2. 【关键】从阶段1拷贝 telegram-bot-api 到当前镜像
-COPY --from=api-source /usr/bin/telegram-bot-api /usr/bin/telegram-bot-api
+COPY --from=api-source /usr/local/bin/telegram-bot-api /usr/bin/telegram-bot-api
 
 # 3. 创建数据目录 (用于挂载 20GB 卷)
 RUN mkdir -p /var/lib/telegram-bot-api
