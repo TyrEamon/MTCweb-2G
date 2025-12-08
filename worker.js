@@ -1,5 +1,5 @@
 // ===========================
-// MTCweb Gallery Ultimate (Old Style + Video + Search)
+// MTCweb Gallery Ultimate Fixed (Old Style + Video Fix + Search)
 // ===========================
 
 const SITE_TITLE = "MTCweb";
@@ -7,7 +7,7 @@ const SITE_TITLE = "MTCweb";
 const SITE_LOGO = "https://link.tyrlink.dpdns.org/mtc.png"; 
 const COUNTER_KEY = "__counter";
 const DEFAULT_CATS = "热门 Cosplay,视频专区,软件资源,个人写真";
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 24;
 
 export default {
   async fetch(request, env, ctx) {
@@ -28,9 +28,11 @@ export default {
     }
     
     // 文件代理 (用于图片预览/视频播放)
+    // 修复：使用 decodeURIComponent 确保路径参数正确传递
     if (path.startsWith("/file/")) {
         const range = request.headers.get("Range");
-        return proxyTelegramFile(env, decodeURIComponent(path.replace("/file/", "")), url, range);
+        const param = decodeURIComponent(path.replace("/file/", ""));
+        return proxyTelegramFile(env, param, url, range);
     }
     
     // 详情页
@@ -104,21 +106,27 @@ async function renderAlbum(env, code, url, categories) {
     `<div class="img-box"><img src="${url.origin}/file/${encodeURIComponent(fid)}" onclick="openLightbox(this.src)" loading="lazy"></div>`
   ).join("");
 
-  // 渲染附件 & 视频
+  // 渲染附件 & 视频 (逻辑修复：正确处理 direct_url 和 file_id)
   let atts = "";
   if (data.attachments && data.attachments.length > 0) {
       atts = data.attachments.map(att => {
           const fname = att.file_name || "";
           const isVideo = fname.toLowerCase().match(/\.(mp4|mov|webm|mkv)$/);
-          const fileUrl = att.tg_link || `${url.origin}/file/${att.file_id}?download=${encodeURIComponent(fname)}`;
           
+          // 修复：优先使用 direct_url，如果没有则回退到 file_id
+          const fileParam = att.direct_url || att.file_id;
+          // 修复：构建正确的下载链接
+          const fileUrl = att.tg_link || `${url.origin}/file/${encodeURIComponent(fileParam)}?download=${encodeURIComponent(fname)}`;
+          
+          // 视频播放源链接 (不带 download 参数)
+          const videoSrc = `${url.origin}/file/${encodeURIComponent(fileParam)}`;
+
           if (isVideo && !att.tg_link) {
-             const src = `${url.origin}/file/${att.file_id}`;
              return `
              <div class="video-card">
                 <div class="video-title">🎬 ${escapeHtml(fname)}</div>
                 <video controls preload="metadata" width="100%" poster="">
-                    <source src="${src}" type="video/mp4">
+                    <source src="${videoSrc}" type="video/mp4">
                     Your browser does not support video.
                 </video>
                 <div style="margin-top:8px;font-size:12px;"><a href="${fileUrl}" style="color:#e11d48;">⬇️ Download Video</a></div>
@@ -131,10 +139,11 @@ async function renderAlbum(env, code, url, categories) {
       }).join("");
   }
 
-  // ZIP 按钮
+  // ZIP 按钮 (逻辑修复)
   let zipHtml = "";
   if (data.zip) {
-      const link = data.zip.tg_link || `${url.origin}/file/${data.zip.file_id}?download=${encodeURIComponent(data.zip.file_name)}`;
+      const zipParam = data.zip.direct_url || data.zip.file_id;
+      const link = data.zip.tg_link || `${url.origin}/file/${encodeURIComponent(zipParam)}?download=${encodeURIComponent(data.zip.file_name)}`;
       zipHtml = `<a class="zip-btn" href="${link}" ${data.zip.tg_link?'target="_blank"':''}>📦 Download ZIP</a>`;
   }
 
@@ -169,7 +178,7 @@ async function renderAlbum(env, code, url, categories) {
 }
 
 // ===========================
-// Data & Proxy Logic
+// Data & Proxy Logic (重要修复)
 // ===========================
 
 async function getAllAlbums(env) {
@@ -191,10 +200,42 @@ async function getAllAlbums(env) {
   return albums.filter(Boolean).sort((a, b) => b.code.localeCompare(a.code, "en", { numeric: true }));
 }
 
-async function proxyTelegramFile(env, fileId, url, rangeHeader) {
+// 核心修复：这个函数现在能同时处理 file_id 和 http 直链
+async function proxyTelegramFile(env, fileIdOrUrl, url, rangeHeader) {
+  // 1. 如果是 HTTP 链接 (直链)，直接转发请求 (修复视频播放关键)
+  if (fileIdOrUrl.startsWith("http")) {
+      try {
+          const newReqHeaders = new Headers();
+          if (rangeHeader) newReqHeaders.set("Range", rangeHeader);
+          
+          const response = await fetch(fileIdOrUrl, {
+              method: "GET", 
+              headers: newReqHeaders,
+              cf: { cacheTtl: 14400, cacheEverything: true }
+          });
+          
+          const newHeaders = new Headers(response.headers);
+          newHeaders.set("Cache-Control", "public, max-age=14400");
+          newHeaders.set("Access-Control-Allow-Origin", "*");
+          
+          // 如果有 download 参数，强制下载
+          const downloadName = url.searchParams.get("download");
+          if (downloadName) {
+              newHeaders.set("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`);
+          }
+          
+          return new Response(response.body, { 
+              status: response.status, 
+              statusText: response.statusText, 
+              headers: newHeaders 
+          });
+      } catch (e) { return new Response("Proxy Error: " + e.message, { status: 502 }); }
+  }
+
+  // 2. 如果是 Telegram File ID (旧逻辑)
   const token = env.BOT_TOKEN;
   try {
-    const metaRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`);
+    const metaRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileIdOrUrl)}`);
     const meta = await metaRes.json();
     if (!meta.ok || !meta.result?.file_path) return new Response("Invalid file metadata", { status: 502 });
     
@@ -223,7 +264,7 @@ async function proxyTelegramFile(env, fileId, url, rangeHeader) {
 function renderListPage(env, { albums, allAlbums, categories, currentCat, currentPage, totalPages, query, url }) {
   const gridCards = albums.map(album => generateCardHtml(url, album)).join("");
 
-  // 生成横向滚动推荐栏
+  // 横向滚动推荐栏 (底部)
   let sectionHtml = "";
   if (!query && !currentCat && currentPage === 1) {
       sectionHtml = categories.map((cat) => {
@@ -262,7 +303,7 @@ function renderListPage(env, { albums, allAlbums, categories, currentCat, curren
       <!-- 2. 分页器 -->
       ${paginationHtml}
 
-      <!-- 3. 横向推荐栏 (现在移动到了最底部) -->
+      <!-- 3. 横向推荐栏 (底部) -->
       ${sectionHtml}
     </main>
     ${getScripts()}
