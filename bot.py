@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 # --- 配置区 ---
 LOCAL_API_URL = os.getenv("LOCAL_API_URL", "http://127.0.0.1:8081/bot") 
 LOCAL_FILE_URL = os.getenv("LOCAL_FILE_URL", "http://127.0.0.1:8081/file/bot")
-# ⚠️ 注意: PUBLIC_DOWNLOAD_ROOT 应该指向 Leaflow 的 8080 端口 (Python 文件服务)
-# 例如 https://mtc.cloudnav.de5.net (不需要加 /file 前缀了，因为 Python Server 根目录就是文件根)
+# 这里的 PUBLIC_DOWNLOAD_ROOT 应该指向 Leaflow 的 8080 端口 (Python 文件服务)
 PUBLIC_DOWNLOAD_ROOT = os.getenv("PUBLIC_DOWNLOAD_ROOT", "http://localhost:8080")
 
 OWNER_ID = 8040798522
@@ -44,20 +43,15 @@ COUNTER_KEY = "__counter"
 # --- 辅助函数 ---
 def kv_headers():
     return {"Authorization": f"Bearer {CF_API_TOKEN}", "Content-Type": "text/plain"}
-
 def kv_base():
     return f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/storage/kv/namespaces/{CF_NAMESPACE_ID}"
-
 def kv_put(key, value):
     return requests.put(f"{kv_base()}/values/{key}", headers=kv_headers(), data=value.encode("utf-8")).status_code == 200
-
 def kv_get(key):
     r = requests.get(f"{kv_base()}/values/{key}", headers=kv_headers())
     return r.text if r.status_code == 200 else None
-
 def kv_delete(key):
     return requests.delete(f"{kv_base()}/values/{key}", headers=kv_headers()).status_code in (200, 204)
-
 def next_code():
     cur = kv_get(COUNTER_KEY)
     n = int(cur) + 1 if cur else 1
@@ -71,21 +65,18 @@ async def ensure_allowed(update: Update):
         return False
     return True
 
-# --- 1. 自动清理线程 (保持不变) ---
+# --- 1. 自动清理线程 ---
 CACHE_DIR = "/var/lib/telegram-bot-api"
 def cleanup_loop():
     logger.info("Auto-cleanup thread started.")
     while True:
         try:
             if not os.path.exists(CACHE_DIR):
-                time.sleep(60)
-                continue
-
+                time.sleep(60); continue
             try:
                 stat = os.statvfs(CACHE_DIR)
                 free_space = stat.f_bavail * stat.f_frsize
-            except:
-                free_space = 99999999999
+            except: free_space = 99999999999
 
             if free_space < 2 * 1024 * 1024 * 1024:
                 logger.warning(f"Low disk space. Cleaning up...")
@@ -95,93 +86,79 @@ def cleanup_loop():
                         fp = os.path.join(r, file)
                         files.append((fp, os.path.getmtime(fp)))
                 files.sort(key=lambda x: x[1])
-
                 deleted_size = 0
                 for fp, mtime in files:
                     try:
                         sz = os.path.getsize(fp)
                         os.remove(fp)
                         deleted_size += sz
-                        if deleted_size > 1 * 1024 * 1024 * 1024:
-                            break
+                        if deleted_size > 1 * 1024 * 1024 * 1024: break
                     except: pass
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+        except Exception as e: logger.error(f"Cleanup error: {e}")
         time.sleep(300)
 
-# --- 2. 新增：内置静态文件服务器 (Port 8080) ---
+# --- 2. 内置静态文件服务器 (Port 8080) ---
 class FileHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        # 强制将根目录指向 Local API 的数据目录
         super().__init__(*args, directory=CACHE_DIR, **kwargs)
 
 def run_file_server():
-    # 监听 0.0.0.0:8080
     logger.info("Starting Python File Server on port 8080...")
-    # 这一步会阻塞线程，所以要放在 Thread 里
     httpd = HTTPServer(('0.0.0.0', 8080), FileHandler)
     httpd.serve_forever()
 
-# --- Bot 逻辑 ---
-
+# --- Bot 逻辑 (已美化文案) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
-    # 使用单行字符串避免语法错误
-    msg = "📸 **Bot Ready (Local API + File Server)**\\n🔹 /start_album - 开始新图包\\n🔹 /nav - 切换分类\\n🔹 /end_album - 发布\\n🔸 直接发送 图片/视频/文件 即可添加"
-    await update.message.reply_text(msg)
+    msg = """📸 **Bot Ready (Local API + File Server)**
+🔹 /start_album - 开始新图包
+🔹 /nav - 切换分类
+🔹 /end_album - 发布
+🔸 直接发送 图片/视频/文件 即可添加"""
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def start_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     default_cat = CATEGORIES[0] if CATEGORIES else ""
     current_albums[update.effective_user.id] = {
         "title": "未命名图包",
-        "category": default_cat,
-        "files": [],
-        "attachments": [],
-        "zip": None,
-        "password": None,
+        "category": default_cat, "files": [], "attachments": [], "zip": None, "password": None,
     }
-    msg = f"🟦 已开始！默认分类：**{default_cat}**\\n请发送标题。"
-    await update.message.reply_text(msg)
+    msg = f"""🟦 已开始！默认分类：**{default_cat}**
+请发送标题。"""
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     uid = update.effective_user.id
     text = update.message.text.strip()
-
     if uid in pending_deletes:
         if text.lower() == "yes":
-            code = pending_deletes.pop(uid)
-            kv_delete(code)
-            await update.message.reply_text(f"🗑 已删除 {code}")
+            code = pending_deletes.pop(uid); kv_delete(code); await update.message.reply_text(f"🗑 已删除 {code}")
         elif text.lower() == "no":
-            pending_deletes.pop(uid)
-            await update.message.reply_text("已取消删除")
-        else:
-            await update.message.reply_text("请回复 yes 或 no")
+            pending_deletes.pop(uid); await update.message.reply_text("已取消删除")
+        else: await update.message.reply_text("请回复 yes 或 no")
         return
-
     album = current_albums.get(uid)
     if album:
         album["title"] = text
-        await update.message.reply_text(f"✅ 标题：**{text}**\\n(/nav 修改分类，或直接发图)")
+        msg = f"""✅ 标题：**{text}**
+(/nav 修改分类，或直接发图)"""
+        await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     uid = update.effective_user.id
     if uid not in current_albums: return await update.message.reply_text("请先 /start_album")
-
     keyboard = []
     for i in range(0, len(CATEGORIES), 2):
         row = [InlineKeyboardButton(CATEGORIES[i], callback_data=f"cat_{i}")]
-        if i + 1 < len(CATEGORIES):
-            row.append(InlineKeyboardButton(CATEGORIES[i + 1], callback_data=f"cat_{i+1}"))
+        if i + 1 < len(CATEGORIES): row.append(InlineKeyboardButton(CATEGORIES[i + 1], callback_data=f"cat_{i+1}"))
         keyboard.append(row)
     await update.message.reply_text(f"👇 当前：{current_albums[uid]['category']}", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_cat_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    query = update.callback_query; await query.answer()
     uid = query.from_user.id
     if uid not in current_albums: return await query.edit_message_text("过期")
     current_albums[uid]["category"] = CATEGORIES[int(query.data.split("_")[1])]
@@ -191,73 +168,60 @@ async def set_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     uid = update.effective_user.id
     if uid not in current_albums: return await update.message.reply_text("未开始")
-    try:
-        pw = update.message.text.split()[1]
-        current_albums[uid]["password"] = pw
-        await update.message.reply_text(f"🔒 密码：{pw}")
-    except:
-        await update.message.reply_text("用法: /set_pass 1234")
+    try: pw = update.message.text.split()[1]; current_albums[uid]["password"] = pw; await update.message.reply_text(f"🔒 密码：{pw}")
+    except: await update.message.reply_text("用法: /set_pass 1234")
 
 async def delete_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     try:
-        if len(update.message.text.split()) < 2:
-            return await update.message.reply_text("用法: /delete a01")
+        if len(update.message.text.split()) < 2: return await update.message.reply_text("用法: /delete a01")
         code = update.message.text.split()[1]
-        if not kv_get(code):
-            return await update.message.reply_text("KV中不存在该代码")
+        if not kv_get(code): return await update.message.reply_text("KV中不存在该代码")
         pending_deletes[update.effective_user.id] = code
         await update.message.reply_text(f"⚠️ 确认删除 {code}？(回复 yes/no)")
-    except Exception as e:
-        logger.error(f"Delete error: {e}")
-        await update.message.reply_text("发生错误")
+    except Exception as e: logger.error(f"Delete error: {e}"); await update.message.reply_text("发生错误")
 
 async def end_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     uid = update.effective_user.id
     album = current_albums.get(uid)
-    if not album or (not album["files"] and not album["attachments"]):
-        return await update.message.reply_text("无数据")
-
+    if not album or (not album["files"] and not album["attachments"]): return await update.message.reply_text("无数据")
     code = next_code()
     if kv_put(code, json.dumps(album, ensure_ascii=False)):
         del current_albums[uid]
-        await update.message.reply_text(
-            f"🎉 **发布成功**\\nCode: `{code}`\\nTitle: {album['title']}\\nCat: {album['category']}\\n{WORKER_BASE_URL}/{code}",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text("❌ 发布失败 (写入KV错误)")
+        link = f"{WORKER_BASE_URL}/{code}"
+        # 漂亮的发布文案
+        msg = f"""🎉 **发布成功**
+Code: `{code}`
+Title: {album['title']}
+Cat: {album['category']}
+{link}"""
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    else: await update.message.reply_text("❌ 发布失败")
 
 async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
-    try:
-        ALLOWED_USERS.add(int(update.message.text.split()[1]))
-        await update.message.reply_text("✅ Added")
+    try: ALLOWED_USERS.add(int(update.message.text.split()[1])); await update.message.reply_text("✅ Added")
     except: pass
 
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
     await update.message.reply_text(f"Users: {ALLOWED_USERS}")
 
-# --- 核心：文件处理 (Local API + Python File Server) ---
+# --- 核心：文件下载 + URL生成 ---
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     uid = update.effective_user.id
     album = current_albums.get(uid)
     if not album: return
-
     msg = update.message
 
-    # 1. 图片
     if msg.photo:
         album["files"].append(msg.photo[-1].file_id)
         return
 
-    # 2. 视频/文件
     if msg.video or msg.document:
-        status_msg = await msg.reply_text("⏳ 正在请求 Local API 下载缓存 (大文件请耐心等待)...")
-
+        status_msg = await msg.reply_text("⏳ 请求 Local API 下载中...")
         try:
             if msg.video:
                 new_file = await msg.video.get_file() 
@@ -268,61 +232,40 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 fname = msg.document.file_name or "file"
                 mime = msg.document.mime_type
 
-            # --- 路径处理核心逻辑 ---
-            # 本地文件路径: /var/lib/telegram-bot-api/<TOKEN>/videos/file.mp4
-            # Python Server 根目录: /var/lib/telegram-bot-api
-            # 目标 URL: https://domain/<TOKEN>/videos/file.mp4
-            
             raw_path = new_file.file_path
-            
-            # 智能提取相对路径 (包含 Token 目录)
+
+            # 智能提取相对路径
             if f"/{BOT_TOKEN}/" in raw_path:
                 sub_path = raw_path.split(f"/{BOT_TOKEN}/")[1]
                 rel_path = f"{BOT_TOKEN}/{sub_path}"
             elif raw_path.startswith("/var/lib/telegram-bot-api/"):
-                # 如果是绝对路径但没有 Token 目录（Local API 版本差异）
                 rel_path = raw_path.replace("/var/lib/telegram-bot-api/", "")
                 if rel_path.startswith("/"): rel_path = rel_path[1:]
             else:
                 rel_path = raw_path
 
-            # 生成指向 Python Server (Port 8080) 的链接
-            # 注意: PUBLIC_DOWNLOAD_ROOT 不需要带 /file 后缀了
             direct_url = f"{PUBLIC_DOWNLOAD_ROOT}/{rel_path}"
 
-            info = {
-                "file_id": new_file.file_id, 
-                "file_name": fname, 
-                "mime_type": mime,
-                "direct_url": direct_url 
-            }
-
+            info = { "file_id": new_file.file_id, "file_name": fname, "mime_type": mime, "direct_url": direct_url }
             album["attachments"].append(info)
-            if not album["zip"] and fname.lower().endswith((".zip", ".rar", ".7z")):
-                album["zip"] = info
+            if not album["zip"] and fname.lower().endswith((".zip", ".rar", ".7z")): album["zip"] = info
 
+            # 美化下载成功提示
             await context.bot.edit_message_text(
                 chat_id=msg.chat_id,
                 message_id=status_msg.message_id,
-                text=f"✅ 已缓存！\\n直链: {direct_url}"
+                text=f"""✅ 已缓存！
+直链: {direct_url}""",
+                disable_web_page_preview=True
             )
-
         except Exception as e:
             logger.error(f"Download error: {e}")
-            await context.bot.edit_message_text(
-                chat_id=msg.chat_id,
-                message_id=status_msg.message_id,
-                text=f"❌ 缓存失败: {e}"
-            )
+            await context.bot.edit_message_text(chat_id=msg.chat_id, message_id=status_msg.message_id, text=f"❌ 缓存失败: {e}")
 
 def main():
-    # 1. 启动清理线程
     threading.Thread(target=cleanup_loop, daemon=True).start()
-    
-    # 2. 启动内置文件服务器 ( Port 8080 )
     threading.Thread(target=run_file_server, daemon=True).start()
 
-    # 3. 启动 Bot
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
@@ -340,7 +283,6 @@ def main():
     app.add_handler(CommandHandler("end_album", end_album))
     app.add_handler(CommandHandler("allow", allow_user))
     app.add_handler(CommandHandler("list_users", list_users))
-
     app.add_handler(CallbackQueryHandler(handle_cat_cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL | filters.VIDEO, handle_media))
