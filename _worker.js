@@ -7,7 +7,7 @@ const SITE_TITLE = "MTCweb";
 const SITE_LOGO = "https://link.tyrlink.dpdns.org/mtc.png"; 
 const COUNTER_KEY = "__counter";
 const DEFAULT_CATS = "热门 Cosplay,视频专区,软件资源,个人写真";
-const PAGE_SIZE = 24;
+const PAGE_SIZE = 20;
 
 export default {
   async fetch(request, env, ctx) {
@@ -182,22 +182,42 @@ async function renderAlbum(env, code, url, categories) {
 // ===========================
 
 async function getAllAlbums(env) {
+  // 1. 获取所有键名
   const list = await env.ALBUMS.list();
   const names = list.keys.map(k => k.name).filter(n => n !== COUNTER_KEY);
-  const albums = await Promise.all(
-    names.map(async code => {
-      const data = await env.ALBUMS.get(code, { type: "json" });
-      if (!data) return null;
-      return {
-        code,
-        title: data.title || code,
-        category: data.category || "", 
-        files: data.files || [],
-        attachments: data.attachments || [], 
-      };
-    })
-  );
-  return albums.filter(Boolean).sort((a, b) => b.code.localeCompare(a.code, "en", { numeric: true }));
+
+  // 2. 分批次获取数据 (Batching)
+  // 每次并发处理 5 个请求，避免触发 Cloudflare 子请求限制
+  const BATCH_SIZE = 5; 
+  const albums = [];
+
+  for (let i = 0; i < names.length; i += BATCH_SIZE) {
+    const batchNames = names.slice(i, i + BATCH_SIZE);
+    
+    // 并行获取当前批次
+    const batchResults = await Promise.all(
+      batchNames.map(async code => {
+        try {
+          const data = await env.ALBUMS.get(code, { type: "json" });
+          if (!data) return null;
+          return {
+            code,
+            title: data.title || code,
+            category: data.category || "", 
+            files: data.files || [],
+            attachments: data.attachments || [], // 保留附件信息以便封面生成
+          };
+        } catch (e) {
+          return null; // 忽略获取失败的项
+        }
+      })
+    );
+    
+    albums.push(...batchResults.filter(Boolean));
+  }
+
+  // 3. 排序 (保持原有的倒序逻辑)
+  return albums.sort((a, b) => b.code.localeCompare(a.code, "en", { numeric: true }));
 }
 
 // 核心修复：这个函数现在能同时处理 file_id 和 http 直链
