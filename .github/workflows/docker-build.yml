@@ -39,4 +39,4 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ env.OWNER_LC }}/bot:0.5
+            ghcr.io/${{ env.OWNER_LC }}/bot:0.6
