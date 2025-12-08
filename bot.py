@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 # --- 配置区 ---
 LOCAL_API_URL = os.getenv("LOCAL_API_URL", "http://127.0.0.1:8081/bot") 
 LOCAL_FILE_URL = os.getenv("LOCAL_FILE_URL", "http://127.0.0.1:8081/file/bot")
-# 这里的 PUBLIC_DOWNLOAD_ROOT 应该指向 Leaflow 的 8080 端口 (Python 文件服务)
 PUBLIC_DOWNLOAD_ROOT = os.getenv("PUBLIC_DOWNLOAD_ROOT", "http://localhost:8080")
 
 OWNER_ID = 8040798522
@@ -78,7 +77,7 @@ def cleanup_loop():
                 free_space = stat.f_bavail * stat.f_frsize
             except: free_space = 99999999999
 
-            if free_space < 2 * 1024 * 1024 * 1024:
+            if free_space < 5 * 1024 * 1024 * 1024:
                 logger.warning(f"Low disk space. Cleaning up...")
                 files = []
                 for r, d, f in os.walk(CACHE_DIR):
@@ -92,25 +91,35 @@ def cleanup_loop():
                         sz = os.path.getsize(fp)
                         os.remove(fp)
                         deleted_size += sz
-                        if deleted_size > 1 * 1024 * 1024 * 1024: break
+                        if deleted_size > 2 * 1024 * 1024 * 1024: break
                     except: pass
         except Exception as e: logger.error(f"Cleanup error: {e}")
         time.sleep(300)
 
-# --- 2. 内置静态文件服务器 (Port 8080) ---
+# --- 2. 安全版内置文件服务器 (Port 8080) ---
 class FileHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=CACHE_DIR, **kwargs)
+        # 【安全核心】将 Web 根目录直接锁定在 Token 文件夹内部
+        # 这样外部访问时，URL 不需要也不可能包含 Token
+        secure_root = os.path.join(CACHE_DIR, BOT_TOKEN)
+
+        # 确保目录存在
+        if not os.path.exists(secure_root):
+            try:
+                os.makedirs(secure_root, exist_ok=True)
+            except: pass # 可能权限不足或已存在
+
+        super().__init__(*args, directory=secure_root, **kwargs)
 
 def run_file_server():
-    logger.info("Starting Python File Server on port 8080...")
+    logger.info("Starting Secure Python File Server on port 8080...")
     httpd = HTTPServer(('0.0.0.0', 8080), FileHandler)
     httpd.serve_forever()
 
-# --- Bot 逻辑 (已美化文案) ---
+# --- Bot 逻辑 ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
-    msg = """📸 **Bot Ready (Local API + File Server)**
+    msg = """📸 **Bot Ready (Local API + Secure File Server)**
 🔹 /start_album - 开始新图包
 🔹 /nav - 切换分类
 🔹 /end_album - 发布
@@ -190,13 +199,12 @@ async def end_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if kv_put(code, json.dumps(album, ensure_ascii=False)):
         del current_albums[uid]
         link = f"{WORKER_BASE_URL}/{code}"
-        # 漂亮的发布文案
         msg = f"""🎉 **发布成功**
 Code: `{code}`
 Title: {album['title']}
 Cat: {album['category']}
 {link}"""
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=False)
     else: await update.message.reply_text("❌ 发布失败")
 
 async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -208,7 +216,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
     await update.message.reply_text(f"Users: {ALLOWED_USERS}")
 
-# --- 核心：文件下载 + URL生成 ---
+# --- 核心：文件下载 + 安全 URL 生成 ---
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     uid = update.effective_user.id
@@ -233,24 +241,23 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mime = msg.document.mime_type
 
             raw_path = new_file.file_path
+            # raw_path 是 /var/lib/telegram-bot-api/<TOKEN>/videos/file.mp4
 
-            # 智能提取相对路径
+            # 【安全修正】截取相对路径，去掉 Token 部分
+            # 因为 Web Server 根目录已经深入到了 Token 文件夹
             if f"/{BOT_TOKEN}/" in raw_path:
-                sub_path = raw_path.split(f"/{BOT_TOKEN}/")[1]
-                rel_path = f"{BOT_TOKEN}/{sub_path}"
-            elif raw_path.startswith("/var/lib/telegram-bot-api/"):
-                rel_path = raw_path.replace("/var/lib/telegram-bot-api/", "")
-                if rel_path.startswith("/"): rel_path = rel_path[1:]
+                rel_path = raw_path.split(f"/{BOT_TOKEN}/")[1]
+                # rel_path 变成 videos/file.mp4
             else:
-                rel_path = raw_path
+                rel_path = os.path.basename(raw_path)
 
+            # URL 最终形态: https://domain.com/videos/file.mp4 (无 Token)
             direct_url = f"{PUBLIC_DOWNLOAD_ROOT}/{rel_path}"
 
             info = { "file_id": new_file.file_id, "file_name": fname, "mime_type": mime, "direct_url": direct_url }
             album["attachments"].append(info)
             if not album["zip"] and fname.lower().endswith((".zip", ".rar", ".7z")): album["zip"] = info
 
-            # 美化下载成功提示
             await context.bot.edit_message_text(
                 chat_id=msg.chat_id,
                 message_id=status_msg.message_id,
