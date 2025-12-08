@@ -27,11 +27,15 @@
 ## 🏗️ 架构概览 (Architecture)
 
 graph LR
-    User[用户] --> 
-    CF[Cloudflare Worker <br/> (UI / Cache / Search)
-    CF -- Metadata --> KV[Cloudflare KV]
-    CF -- Stream/Download --> Leaflow[Leaflow / VPS Container]
-    Leaflow -- Local API --> TG[Telegram Server]
+    User[用户] --> CF["Cloudflare Worker <br/> (UI / Cache / Search)"]
+    CF -- Metadata --> KV["Cloudflare KV"]
+    CF -- Stream/Download --> Leaflow["Leaflow / VPS Container"]
+    Leaflow -- Local API --> TG["Telegram Server"]
+
+    subgraph LeaflowContainer [Leaflow Container]
+    Py["Python Bot + File Server"]
+    Disk["Storage (Auto-Cleanup)"]
+    end
 
 ## 🛠️ 部署指南 (Deployment)
 
