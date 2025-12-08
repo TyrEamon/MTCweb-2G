@@ -26,6 +26,7 @@
 
 ## 🏗️ 架构概览 (Architecture)
 
+```mermaid
 graph LR
     User[用户] --> CF["Cloudflare Worker <br/> (UI / Cache / Search)"]
     CF -- Metadata --> KV["Cloudflare KV"]
@@ -36,6 +37,7 @@ graph LR
     Py["Python Bot + File Server"]
     Disk["Storage (Auto-Cleanup)"]
     end
+```
 
 ## 🛠️ 部署指南 (Deployment)
 
