@@ -115,17 +115,14 @@ def cleanup_loop():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
-    await update.message.reply_text(
-        "📸 **Bot Ready (Local API Mode)**
-"
-        "🔹 /start_album - 开始新图包
-"
-        "🔹 /nav - 切换分类
-"
-        "🔹 /end_album - 发布
-"
-        "🔸 直接发送 图片/视频/文件 即可添加"
-    )
+    # 使用三引号，避免换行符问题
+    msg = """📸 **Bot Ready (Local API Mode)**
+🔹 /start_album - 开始新图包
+🔹 /nav - 切换分类
+🔹 /end_album - 发布
+🔸 直接发送 图片/视频/文件 即可添加"""
+    await update.message.reply_text(msg)
+
 
 async def start_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
