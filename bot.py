@@ -4,6 +4,7 @@ import logging
 import requests
 import time
 import threading
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, AIORateLimiter,
@@ -16,9 +17,10 @@ logger = logging.getLogger(__name__)
 # --- 配置区 ---
 LOCAL_API_URL = os.getenv("LOCAL_API_URL", "http://127.0.0.1:8081/bot") 
 LOCAL_FILE_URL = os.getenv("LOCAL_FILE_URL", "http://127.0.0.1:8081/file/bot")
-PUBLIC_DOWNLOAD_ROOT = os.getenv("PUBLIC_DOWNLOAD_ROOT", "http://localhost:8081/file")
+# ⚠️ 注意: PUBLIC_DOWNLOAD_ROOT 应该指向 Leaflow 的 8080 端口 (Python 文件服务)
+# 例如 https://mtc.cloudnav.de5.net (不需要加 /file 前缀了，因为 Python Server 根目录就是文件根)
+PUBLIC_DOWNLOAD_ROOT = os.getenv("PUBLIC_DOWNLOAD_ROOT", "http://localhost:8080")
 
-# ⚠️ 请确保这里填对您的 ID (数字)
 OWNER_ID = 8040798522
 ALLOWED_USERS = set([OWNER_ID])
 
@@ -69,7 +71,7 @@ async def ensure_allowed(update: Update):
         return False
     return True
 
-# --- 自动清理线程 ---
+# --- 1. 自动清理线程 (保持不变) ---
 CACHE_DIR = "/var/lib/telegram-bot-api"
 def cleanup_loop():
     logger.info("Auto-cleanup thread started.")
@@ -107,12 +109,25 @@ def cleanup_loop():
             logger.error(f"Cleanup error: {e}")
         time.sleep(300)
 
+# --- 2. 新增：内置静态文件服务器 (Port 8080) ---
+class FileHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        # 强制将根目录指向 Local API 的数据目录
+        super().__init__(*args, directory=CACHE_DIR, **kwargs)
+
+def run_file_server():
+    # 监听 0.0.0.0:8080
+    logger.info("Starting Python File Server on port 8080...")
+    # 这一步会阻塞线程，所以要放在 Thread 里
+    httpd = HTTPServer(('0.0.0.0', 8080), FileHandler)
+    httpd.serve_forever()
+
 # --- Bot 逻辑 ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
-    # 修复：使用单行字符串拼接，避免 SyntaxError
-    msg = "📸 **Bot Ready (Local API Mode)**\n🔹 /start_album - 开始新图包\n🔹 /nav - 切换分类\n🔹 /end_album - 发布\n🔸 直接发送 图片/视频/文件 即可添加"
+    # 使用单行字符串避免语法错误
+    msg = "📸 **Bot Ready (Local API + File Server)**\\n🔹 /start_album - 开始新图包\\n🔹 /nav - 切换分类\\n🔹 /end_album - 发布\\n🔸 直接发送 图片/视频/文件 即可添加"
     await update.message.reply_text(msg)
 
 async def start_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,8 +141,7 @@ async def start_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "zip": None,
         "password": None,
     }
-    # 修复：单行拼接
-    msg = f"🟦 已开始！默认分类：**{default_cat}**\n请发送标题。"
+    msg = f"🟦 已开始！默认分类：**{default_cat}**\\n请发送标题。"
     await update.message.reply_text(msg)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,7 +164,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     album = current_albums.get(uid)
     if album:
         album["title"] = text
-        await update.message.reply_text(f"✅ 标题：**{text}**\n(/nav 修改分类，或直接发图)")
+        await update.message.reply_text(f"✅ 标题：**{text}**\\n(/nav 修改分类，或直接发图)")
 
 async def handle_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
@@ -209,7 +223,7 @@ async def end_album(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if kv_put(code, json.dumps(album, ensure_ascii=False)):
         del current_albums[uid]
         await update.message.reply_text(
-            f"🎉 **发布成功**\nCode: `{code}`\nTitle: {album['title']}\nCat: {album['category']}\n{WORKER_BASE_URL}/{code}",
+            f"🎉 **发布成功**\\nCode: `{code}`\\nTitle: {album['title']}\\nCat: {album['category']}\\n{WORKER_BASE_URL}/{code}",
             parse_mode="Markdown"
         )
     else:
@@ -226,7 +240,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
     await update.message.reply_text(f"Users: {ALLOWED_USERS}")
 
-# --- 核心：文件处理 (Local API) ---
+# --- 核心：文件处理 (Local API + Python File Server) ---
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await ensure_allowed(update): return
     uid = update.effective_user.id
@@ -254,7 +268,27 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 fname = msg.document.file_name or "file"
                 mime = msg.document.mime_type
 
-            direct_url = f"{PUBLIC_DOWNLOAD_ROOT}/bot{BOT_TOKEN}/{new_file.file_path}"
+            # --- 路径处理核心逻辑 ---
+            # 本地文件路径: /var/lib/telegram-bot-api/<TOKEN>/videos/file.mp4
+            # Python Server 根目录: /var/lib/telegram-bot-api
+            # 目标 URL: https://domain/<TOKEN>/videos/file.mp4
+            
+            raw_path = new_file.file_path
+            
+            # 智能提取相对路径 (包含 Token 目录)
+            if f"/{BOT_TOKEN}/" in raw_path:
+                sub_path = raw_path.split(f"/{BOT_TOKEN}/")[1]
+                rel_path = f"{BOT_TOKEN}/{sub_path}"
+            elif raw_path.startswith("/var/lib/telegram-bot-api/"):
+                # 如果是绝对路径但没有 Token 目录（Local API 版本差异）
+                rel_path = raw_path.replace("/var/lib/telegram-bot-api/", "")
+                if rel_path.startswith("/"): rel_path = rel_path[1:]
+            else:
+                rel_path = raw_path
+
+            # 生成指向 Python Server (Port 8080) 的链接
+            # 注意: PUBLIC_DOWNLOAD_ROOT 不需要带 /file 后缀了
+            direct_url = f"{PUBLIC_DOWNLOAD_ROOT}/{rel_path}"
 
             info = {
                 "file_id": new_file.file_id, 
@@ -270,7 +304,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.edit_message_text(
                 chat_id=msg.chat_id,
                 message_id=status_msg.message_id,
-                text=f"✅ 已缓存！\n直链: {direct_url}"
+                text=f"✅ 已缓存！\\n直链: {direct_url}"
             )
 
         except Exception as e:
@@ -282,7 +316,13 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 def main():
+    # 1. 启动清理线程
     threading.Thread(target=cleanup_loop, daemon=True).start()
+    
+    # 2. 启动内置文件服务器 ( Port 8080 )
+    threading.Thread(target=run_file_server, daemon=True).start()
+
+    # 3. 启动 Bot
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
