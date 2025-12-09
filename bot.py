@@ -91,7 +91,7 @@ def cleanup_loop():
                         sz = os.path.getsize(fp)
                         os.remove(fp)
                         deleted_size += sz
-                        if deleted_size > 2 * 1024 * 1024 * 1024: break
+                        if deleted_size > 5 * 1024 * 1024 * 1024: break
                     except: pass
         except Exception as e: logger.error(f"Cleanup error: {e}")
         time.sleep(300)
@@ -232,11 +232,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await msg.reply_text("⏳ 请求 Local API 下载中...")
         try:
             if msg.video:
-                new_file = await msg.video.get_file() 
+                new_file = await msg.video.get_file(read_timeout=1200) 
                 fname = msg.video.file_name or "video.mp4"
                 mime = msg.video.mime_type
             else:
-                new_file = await msg.document.get_file()
+                new_file = await msg.document.get_file(read_timeout=1200)
                 fname = msg.document.file_name or "file"
                 mime = msg.document.mime_type
 
